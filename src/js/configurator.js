@@ -167,13 +167,13 @@ window.configuratorApp = (function(){
       define_occur = [{},{}],   // lines where defines occur in each file
       define_groups = [{},{}],  // similarly-named defines that group in the form
       define_section = {},      // the section of each define
-      dependent_groups = {},
-      boards_list = {},
-      therms_list = {},
-      total_config_lines,
+      dependent_groups = {},    // lines that depend on set/unset options
+      boards_list = {},         // all boards, for the MOTHERBOARD setting
+      therms_list = {},         // thermistors, for the TEMP_SENSOR settings
+      total_config_lines,       // total line counts
       total_config_adv_lines,
-      hover_timer,
-      pulse_offset = 0;
+      hover_timer,              // for tooltips
+      pulse_offset = 0;         // for error messages
 
   // Return this anonymous object as configuratorApp
   return {
@@ -268,9 +268,9 @@ window.configuratorApp = (function(){
               if (r = rateLimit) {
                 if (r.quota < 20) {
                   self.setMessage(
-                    'Approaching request limit (' +
-                    r.quota + ' remaining.' +
-                    ' Reset in ' + Math.floor(r.timeLeft/60) + ':' + (r.timeLeft%60+'').zeroPad(2) + ')',
+                    'Approaching request limit ('
+                      + r.quota + ' remaining.'
+                      + ' Reset in ' + Math.floor(r.timeLeft/60) + ':' + (r.timeLeft%60+'').zeroPad(2) + ')',
                     'warning'
                   );
                 }
@@ -365,38 +365,41 @@ window.configuratorApp = (function(){
      *   .line     The occurrence line
      */
     initDefineList: function(cindex) {
+      this.log(">> initDefineList", 4);
       var section = 'hidden',
-          leave_out_defines = ['CONFIGURATION_H', 'CONFIGURATION_ADV_H'],
+          leave_out_defines = ['CONFIGURATION_H', 'CONFIGURATION_H_VERSION', 'CONFIGURATION_ADV_H', 'CONFIGURATION_ADV_H_VERSION'],
           define_sect = {},
           occ_list = {},
           txt = config_list[cindex].text(),
           r, findDef = new RegExp('^.*(@section|#define)[ \\t]+(\\w+).*$', 'gm');
+      // scan for sections and defines
       while((r = findDef.exec(txt)) !== null) {
         var name = r[2];
         if (r[1] == '@section') {
           section = name;
         }
-        else if ($.inArray(name, leave_out_defines) < 0) {
-          var lineNum = txt.lineCount(r.index),
-              inst = { cindex:cindex, lineNum:lineNum, line:r[0] },
-              in_sect = (name in define_sect);
-          if (!in_sect) {
-            occ_list[name] = [ inst ];
-          }
-          if (!(name in define_section) && !in_sect) {
+        else if ($.inArray(name, leave_out_defines) < 0) {            // skip some defines
+          var lineNum = txt.lineCount(r.index),                       // the line number
+              inst = { cindex:cindex, lineNum:lineNum, line:r[0] },   // config, line, section/define
+              in_sect = (name in define_sect);                        // already found (locally)?
+
+          if (!in_sect) occ_list[name] = [ inst ];                    // no, first item in section
+
+          if (!in_sect && !(name in define_section)) {                // first time in section, ever
             define_sect[name] = section; // new first-time define
           }
           else {
-            occ_list[name].push(inst);
+            occ_list[name].push(inst);                                // it's another occurrence
           }
         }
       }
       define_list[cindex] = Object.keys(define_sect);
       define_occur[cindex] = occ_list;
       $.extend(define_section, define_sect);
-      this.log(define_list[cindex], 2);
-      this.log(occ_list, 2);
-      this.log(define_sect, 2);
+      this.log(define_list[cindex], 5);
+      this.log(occ_list, 5);
+      this.log(define_sect, 5);
+      this.log("<< initDefineList", 4);
     },
 
     /**
@@ -409,6 +412,7 @@ window.configuratorApp = (function(){
      *   .count   number of items in the group
      */
     refreshDefineGroups: function(cindex) {
+      this.log(">> refreshDefineGroups", 4);
       var findDef = /^(|.*_)(([XYZE](MAX|MIN))|(E[0-3]|[XYZE01234])|MAX|MIN|(bed)?K[pid]|HOTEND|HPB|JAPAN|WESTERN|CYRILLIC|LEFT|RIGHT|BACK|FRONT|[XYZ]_POINT)(_.*|)$/i;
       var match_prev, patt, title, nameList, groups = {}, match_section;
       $.each(define_list[cindex], function(i, name) {
@@ -493,7 +497,8 @@ window.configuratorApp = (function(){
         }
       });
       define_groups[cindex] = groups;
-      this.log(define_groups[cindex], 2);
+      this.log(define_groups[cindex], 5);
+      this.log("<< refreshDefineGroups", 4);
     },
 
     /**
@@ -508,8 +513,9 @@ window.configuratorApp = (function(){
      *
      */
     initDependentGroups: function() {
-      var findBlock = /^[ \t]*#(ifn?def|if|else|endif)[ \t]*(.*)([ \t]*\/\/[^\n]+)?$/gm,
-          leave_out_defines = ['CONFIGURATION_H', 'CONFIGURATION_ADV_H'];
+      this.log(">> initDependentGroups", 4);
+      var findBlock = /^[ \t]*#(ifn?def|if|elif|else|endif)[ \t]*(.*)([ \t]*\/\/[^\n]+)?$/gm,
+          leave_out_defines = ['CONFIGURATION_H', 'CONFIGURATION_H_VERSION', 'CONFIGURATION_ADV_H', 'CONFIGURATION_ADV_H_VERSION'];
       dependent_groups = {};
       $.each(config_list, function(i, $v) {
         var ifStack = [];
@@ -519,9 +525,10 @@ window.configuratorApp = (function(){
           var code = r[2].replace(/[ \t]*\/\/.*$/, '');
           switch(r[1]) {
             case 'if':
+            case 'elif':
               var code = code
-                .replace('ENABLED(', 'defined(')
-                .replace('DISABLED(', '!defined(')
+                .replace(/ENABLED[ \t]*\(/g, 'defined(')
+                .replace(/DISABLED[ \t]*\(/g, '!defined(')
                 .replace(/([A-Z][A-Z0-9_]+)/g, 'self.defineValue("$1")')
                 .replace(/defined[ \t]*\(?[ \t]*self.defineValue\(("[A-Z][A-Z0-9_]+")\)[ \t]*\)?/g, 'self.defineIsEnabled($1)');
               ifStack.push(['('+code+')', lineNum]);  // #if starts on next line
@@ -556,8 +563,8 @@ window.configuratorApp = (function(){
                 if (r[1] == 'else') {
                   // Reverse the condition
                   cond = (cond.indexOf('!') === 0) ? cond.substr(1) : ('!'+cond);
-                  ifStack.push([cond, lineNum]);
-                  self.log("push " + cond, 4);
+                  ifStack.push(['('+cond+')', lineNum]);
+                  self.log("push     if " + cond, 4);
                 }
               }
               else {
@@ -567,6 +574,7 @@ window.configuratorApp = (function(){
           }
         }
       }); // text blobs loop
+      this.log("<< initDependentGroups", 4);
     },
 
     /**
@@ -574,11 +582,13 @@ window.configuratorApp = (function(){
      * The "enabled" field may need an update for newly-loaded dependencies
      */
     initDefineInfo: function() {
+      this.log(">> initDefineInfo", 4);
       $.each(define_list, function(e,def_list){
         $.each(def_list, function(i, name) {
           define_info[name] = self.getDefineInfo(name, e);
         });
       });
+      this.log("<< initDefineInfo", 4);
     },
 
     /**
@@ -586,16 +596,20 @@ window.configuratorApp = (function(){
      * Use define_groups data to group fields together
      */
     createFieldsForDefines: function(cindex) {
+      this.log(">> createFieldsForDefines", 4);
       // var n = 0;
       var grouping = false, group = define_groups[cindex],
           g_pattern, g_regex, g_subitem, g_section, g_class,
           fail_list = [];
       $.each(define_list[cindex], function(i, name) {
         var section = define_section[name];
+            self.log(section, 5);
         if (section != 'hidden' && !$('#'+name).length) {
           var inf = define_info[name];
 
           if (inf) {
+
+            self.log(inf, 5);
 
             var label_text = name, sublabel;
 
@@ -621,6 +635,8 @@ window.configuratorApp = (function(){
               label_text = grp.title;
               sublabel = g_regex.exec(name)[1];
             }
+
+            self.log("eval (1): " + inf.enabled, 4);
 
             var $ff = $('#'+section), $newfield,
                 avail = eval(inf.enabled);
@@ -679,25 +695,28 @@ window.configuratorApp = (function(){
         }
       });
       if (fail_list.length) this.log('Unable to parse:\n' + fail_list.join('\n'), 2);
+      this.log("<< createFieldsForDefines", 4);
     },
 
     /**
      * Handle a file being dropped on the file field
      */
     handleFileLoad: function(txt, $uploader) {
+      this.log(">> handleFileLoad", 4);
       txt += '';
       var filename = $uploader.val().replace(/.*[\/\\](.*)$/, '$1');
       if ($.inArray(filename, config_file_list))
         this.fileLoaded(filename, txt);
       else
         this.setMessage("Can't parse '"+filename+"'!");
+      this.log("<< handleFileLoad", 4);
     },
 
     /**
      * Process a file after it's been successfully loaded
      */
     fileLoaded: function(filename, txt, wait) {
-      this.log("fileLoaded:"+filename,4);
+      this.log(">> fileLoaded:"+filename, 4);
       var err, cindex;
       switch(filename) {
         case boards_file:
@@ -744,9 +763,11 @@ window.configuratorApp = (function(){
         ? 'Please upload a "' + boards_file + '" file first!'
         : '"' + filename + '" loaded successfully.', err ? 'error' : 'message'
       );
+      this.log("<< fileLoaded:"+filename, 4);
     },
 
     prepareConfigData: function(cindex) {
+      this.log(">> prepareConfigData:"+cindex, 4);
       var inds = (cindex == 2) ? [ 0, 1 ] : [ cindex ];
       $.each(inds, function(i,e){
         // Purge old fields from the form, clear the define list
@@ -768,6 +789,7 @@ window.configuratorApp = (function(){
         self.refreshConfigForm(e);
         self.activateDownloadLink(e);
       });
+      this.log("<< prepareConfigData:"+cindex, 4);
     },
 
     /**
@@ -898,10 +920,12 @@ window.configuratorApp = (function(){
      * based on their dependencies.
      */
     refreshDependentFields: function() {
+      this.log(">> refreshDependentFields", 4);
       $.each(define_list, function(e,def_list){
         $.each(def_list, function(i, name) {
           var inf = define_info[name];
           if (inf && inf.enabled != 'true') {
+            self.log("eval (2): " + inf.enabled, 4);
             var $elm = $('#'+name), ena = eval(inf.enabled);
             var isEnabled = (inf.type == 'switch') || self.defineIsEnabled(name);
             $('#'+name+'-switch').attr('disabled', !ena);
@@ -910,13 +934,14 @@ window.configuratorApp = (function(){
           }
         });
       });
+      this.log("<< refreshDependentFields", 4);
     },
 
     /**
      * Make a field responsive, tooltip its label(s), add enabler if needed
      */
     initField: function(name) {
-      this.log("initField:"+name,4);
+      this.log("initField:"+name, 4);
       var $elm = $('#'+name), inf = define_info[name];
       $elm[0].defineInfo = inf;
 
@@ -1016,7 +1041,7 @@ window.configuratorApp = (function(){
      * Get the current value of a #define
      */
     defineValue: function(name) {
-      this.log('defineValue:'+name,4);
+      this.log('defineValue:'+name, 4);
       var inf = define_info[name];
       if (inf == null) return 'n/a';
       var r = inf.regex.exec(inf.line), val = r[inf.val_i];
@@ -1030,15 +1055,15 @@ window.configuratorApp = (function(){
      * Get the current enabled state of a #define
      */
     defineIsEnabled: function(name) {
-      this.log('defineIsEnabled:'+name,4);
+      this.log('defineIsEnabled:'+name, 4);
       var inf = define_info[name];
       if (inf == null) return false;
       var r = inf.regex.exec(inf.line);
 
-      this.log(r,2);
+      this.log(r, 5);
 
       var on = r[1] != null ? r[1].trim() != '//' : true;
-      this.log(name + ' = ' + on, 2);
+      this.log(name + ' = ' + on, 5);
 
       return on;
     },
@@ -1047,7 +1072,7 @@ window.configuratorApp = (function(){
      * Set a #define enabled or disabled by altering the config text
      */
     setDefineEnabled: function(name, val) {
-      this.log('setDefineEnabled:'+name,4);
+      this.log('setDefineEnabled:'+name, 4);
       var inf = define_info[name];
       if (inf) {
         var slash = val ? '' : '//';
@@ -1062,7 +1087,7 @@ window.configuratorApp = (function(){
      * Update a #define (from the form) by altering the config text
      */
     updateDefineFromField: function(name) {
-      this.log('updateDefineFromField:'+name,4);
+      this.log('updateDefineFromField:'+name, 4);
 
       // Drop the suffix on sub-fields
       name = name.replace(/-\d+$/, '');
@@ -1102,7 +1127,7 @@ window.configuratorApp = (function(){
      *   then update, highlight, and scroll to the line
      */
     setDefineLine: function(name, newline) {
-      this.log('setDefineLine:'+name+'\n'+newline,4);
+      this.log('setDefineLine:'+name+'\n'+newline, 4);
       var inf = define_info[name];
       var $c = $(inf.field), txt = $c.text();
 
@@ -1125,7 +1150,7 @@ window.configuratorApp = (function(){
      * Scroll a pre box to reveal a #define
      */
     scrollToDefine: function(name, always) {
-      this.log('scrollToDefine:'+name,4);
+      this.log('scrollToDefine:'+name, 4);
       var inf = define_info[name], $c = $(inf.field);
 
       // Scroll to the altered text if it isn't visible
@@ -1146,7 +1171,7 @@ window.configuratorApp = (function(){
       var $elm = $('#'+name), inf = define_info[name],
           val = this.defineValue(name);
 
-      this.log('initFieldValue:' + name + ' to ' + val, 2);
+      this.log('initFieldValue:' + name + ' to ' + val, 5);
 
       // If the item is switchable then set enabled state too
       var $cb = $('#'+name+'-switch'), avail = eval(inf.enabled), on = true;
@@ -1207,20 +1232,20 @@ window.configuratorApp = (function(){
      */
     getDefineInfo: function(name, cindex) {
       if (cindex === undefined) cindex = 0;
-      this.log('getDefineInfo:'+name,4);
+      this.log('getDefineInfo:'+name, 4);
       var $c = config_list[cindex], txt = $c.text(),
           info = { type:0, cindex:cindex, field:$c[0], val_i:2 }, post;
 
       // a switch line with no value
-      var find = new RegExp('^([ \\t]*//)?([ \\t]*#define[ \\t]+' + name + ')([ \\t]*(/[*/].*)?)$', 'm'),
+      var find = new RegExp('^([ \\t]*//)?[ \\t]*(#define[ \\t]+' + name + ')([ \\t]*(/[*/].*)?)$', 'm'),
           r = find.exec(txt);
       if (r !== null) {
         post = r[3] == null ? '' : r[3];
         $.extend(info, {
           type: 'switch',
           val_i: 1,
-          regex: new RegExp('([ \\t]*//)?([ \\t]*' + r[2].regEsc() + post.regEsc() + ')', 'm'),
-          repl:  new RegExp('([ \\t]*)(\/\/)?([ \\t]*' + r[2].regEsc() + post.regEsc() + ')', 'm')
+          regex: new RegExp('([ \\t]*//)?[ \\t]*(' + r[2].regEsc() + post.regEsc() + ')', 'm'),
+          repl:  new RegExp('([ \\t]*)(\/\/)?[ \\t]*(' + r[2].regEsc() + post.regEsc() + ')', 'm')
         });
       }
       else {
@@ -1293,7 +1318,7 @@ window.configuratorApp = (function(){
           find = new RegExp('^[ \\t]*//+[ \\t]*(.*)[ \\t]*$', 'gm');
           while((s = find.exec(r[1])) !== null) temp.unshift(s[1]);
 
-          this.log(name+":\n"+temp.join('\n'), 2);
+          this.log(name+":\n"+temp.join('\n'), 5);
 
           // Go through the reversed lines and add comment lines on
           $.each(temp, function(i,v) {
@@ -1310,10 +1335,12 @@ window.configuratorApp = (function(){
           $.each(tips, function(i,tip) {
             // if (tip.match(/^#define[ \\t]/) != null) tooltip = eoltip;
             // JSON data? Save as select options
-            if (!info.options && tip.match(/:[\[{]/) != null) {
+            var parts = tip.match(/:([\[{].+)/);
+            if (!info.options && parts != null) {
               // TODO
               // :[1-6] = value limits
-              var o; eval('o=' + tip.substr(1));
+              //console.log('o=' + parts[1]);
+              var o; eval('o=' + parts[1]);
               info.options = o;
               if (Object.prototype.toString.call(o) == "[object Array]" && o.length == 2 && !eval(''+o[0]))
                 info.type = 'toggle';
@@ -1352,7 +1379,7 @@ window.configuratorApp = (function(){
       else
         info = null;
 
-      this.log(info, 2);
+      this.log(info, 5);
 
       return info;
     },
