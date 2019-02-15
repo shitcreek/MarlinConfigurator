@@ -183,7 +183,7 @@ window.configuratorApp = (function(){
     init: function() {
       self = this; // a 'this' for use when 'this' is something else
 
-      // Set up the form, creating fields and fieldsets as-needed
+      // Add initial enhancements to the existing form
       this.initConfigForm();
 
       // Make tabs for all the fieldsets
@@ -863,7 +863,7 @@ window.configuratorApp = (function(){
         var $link = $('<a>',{href:'#'+ind,id:tabID}).text($leg.text());
         $tabs.append($('<li>').append($link));
         $link.click(function(e){
-          e.preventDefault;
+          e.preventDefault();
           var ind = this.id;
           $tabs.find('.active').removeClass('active');
           $(this).addClass('active');
